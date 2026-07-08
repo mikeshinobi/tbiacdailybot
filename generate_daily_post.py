@@ -36,6 +36,7 @@ import re
 import datetime
 import urllib.request
 import urllib.error
+import urllib.parse
 
 from PIL import Image
 
@@ -91,10 +92,21 @@ def http_post_json(url, payload, headers):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            status = resp.status
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        e.body_text = body  # stash it -- the underlying stream can't be read twice
         print(f"HTTP {e.code} error calling {url}:\n{body}", file=sys.stderr)
+        raise
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        print(f"Warning: got HTTP {status} from {url} but the body wasn't valid JSON.", file=sys.stderr)
+        print(f"----- Raw response body ({len(raw)} chars) -----", file=sys.stderr)
+        print(raw if raw else "(completely empty)", file=sys.stderr)
+        print("-------------------------------------------------", file=sys.stderr)
         raise
 
 
@@ -152,7 +164,9 @@ def generate_post(recent_titles, categories):
 
     system_prompt = f"""You are a content writer for a website about: {SITE_TOPIC}.
 Your writing voice is: {SITE_VOICE}.
-Today's date is: {today_str}.
+Today's date is: {today_str}. Some of the time, and only where it fits naturally, let this influence your topic choice --
+e.g. lean into a season, upcoming holiday, or time-of-year-relevant angle. Don't force it if
+the topic doesn't call for it. At the very least, let it steer you away from certain topics -- eg. don't write about Christmas and winter stuff in July
 
 Additional rules and instructions you must follow:
 {SITE_INSTRUCTIONS if SITE_INSTRUCTIONS.strip() else "(none)"}
@@ -176,9 +190,23 @@ You must respond with ONLY a JSON object (no markdown fences, no commentary) wit
                          by the title -- avoid generic or abstract imagery. Explicitly include
                          words like "photograph" or "photorealistic" in the prompt itself.
                          No text or words should appear in the image.
+                         If the topic involves skin, needles, medical procedures, or bodily
+                         trauma (e.g. tattoos, piercings, injuries, skin conditions), keep the
+                         image clean and professional -- e.g. a studio/clinic setting, tools laid
+                         out, a finished/healed result, or a product shot -- rather than depicting
+                         wounds, blood, or damaged skin, since realistic depictions of those can
+                         get incorrectly flagged as harmful content by the image generator.
                "alt": short accessibility alt text describing the image
 
 The post should be genuinely useful or interesting, around 500-800 words.
+
+CRITICAL: your entire reply must be a single valid JSON object that a strict JSON parser can
+read. Inside "html_body" specifically: use single quotes for any HTML attributes (e.g.
+<img alt='like this'>, not <img alt="like this">), and make sure any apostrophes or double
+quotes that appear in the visible text (e.g. "don't", a quoted phrase) are properly
+backslash-escaped so they don't break the JSON string. Never use a bare double-quote character
+as a shorthand for inches or feet (e.g. do not write 6" or 12" -- write "6 inches" or "12 in."
+as words instead). Double-check this before responding.
 Do not write about any of these recent topics (already covered):
 {avoid_list}
 """
@@ -197,12 +225,35 @@ Do not write about any of these recent topics (already covered):
         "anthropic-version": "2023-06-01",
     }
 
-    result = http_post_json("https://api.anthropic.com/v1/messages", payload, headers)
-    text = "".join(block["text"] for block in result["content"] if block["type"] == "text")
+    max_attempts = 2
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        result = http_post_json("https://api.anthropic.com/v1/messages", payload, headers)
+        text = "".join(block["text"] for block in result["content"] if block["type"] == "text")
 
-    # Claude is asked to return pure JSON; strip accidental code fences just in case.
-    cleaned = re.sub(r"^```(json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    post = json.loads(cleaned)
+        # Claude is asked to return pure JSON; strip accidental code fences just in case.
+        cleaned = re.sub(r"^```(json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
+
+        try:
+            post = json.loads(cleaned)
+            break
+        except json.JSONDecodeError as e:
+            last_error = e
+            print(f"Warning: Claude's response wasn't valid JSON (attempt {attempt}/{max_attempts}): {e}", file=sys.stderr)
+            if attempt == max_attempts:
+                print("----- Raw response that failed to parse -----", file=sys.stderr)
+                print(text, file=sys.stderr)
+                print("----------------------------------------------", file=sys.stderr)
+                raise
+            # Ask Claude to fix its own output rather than starting over from scratch.
+            payload["messages"] = payload["messages"] + [
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": (
+                    f"That response was not valid JSON -- Python's json.loads() failed with: {e}. "
+                    "Reply again with ONLY a corrected, strictly valid JSON object (same keys as "
+                    "before), fixing whatever broke the JSON (likely an unescaped quote or apostrophe)."
+                )},
+            ]
 
     images = post["images"][:MAX_IMAGES]
     if not images:
@@ -217,13 +268,20 @@ Do not write about any of these recent topics (already covered):
 # Step 3: generate each image
 # ---------------------------------------------------------------------------
 
-def generate_image_bytes(image_prompt):
+def generate_image_bytes(image_prompt, safety_retry=False):
     # Belt-and-suspenders: reinforce photorealism in code, not just via Claude's prompt wording.
     styled_prompt = (
         f"{image_prompt} "
         "Photorealistic photograph, natural lighting, realistic textures and detail, "
         "shot on a real camera -- not a painting, illustration, cartoon, or digital art."
     )
+    if safety_retry:
+        styled_prompt += (
+            " Keep the image clearly clean, professional, and non-graphic -- no wounds, "
+            "blood, damaged skin, or anything that could look like bodily harm. Show a calm, "
+            "well-lit, everyday setting instead (e.g. a clinic, studio, or product shot)."
+        )
+
     payload = {
         "model": IMAGE_MODEL,
         "prompt": styled_prompt,
@@ -235,7 +293,19 @@ def generate_image_bytes(image_prompt):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
-    result = http_post_json("https://api.openai.com/v1/images/generations", payload, headers)
+
+    try:
+        result = http_post_json("https://api.openai.com/v1/images/generations", payload, headers)
+    except urllib.error.HTTPError as e:
+        body = getattr(e, "body_text", "")
+        if e.code == 400 and "moderation_blocked" in body:
+            if not safety_retry:
+                print("  Image was blocked by the safety filter; retrying with a safer framing...", file=sys.stderr)
+                return generate_image_bytes(image_prompt, safety_retry=True)
+            print("  Image blocked again even after a safer retry; skipping this image.", file=sys.stderr)
+            return None
+        raise
+
     b64_data = result["data"][0]["b64_json"]
     return base64.b64decode(b64_data)
 
@@ -305,6 +375,14 @@ def build_images_and_insert(title, html_body, image_specs):
         print(f"  Generating image {i}/{len(image_specs)}...")
         raw_bytes = generate_image_bytes(spec["prompt"])
 
+        placeholder = f"[[IMAGE_{i}]]"
+        if raw_bytes is None:
+            # Image generation was blocked/skipped -- just remove its placeholder and move on
+            # rather than failing the whole post.
+            print(f"  Skipping image {i} (generation was blocked); post will continue without it.", file=sys.stderr)
+            html_body = html_body.replace(placeholder, "")
+            continue
+
         if i == 1:
             # Main/featured image: fixed 400x300, floated right in the content.
             final_bytes = resize_and_crop(raw_bytes, MAIN_IMAGE_SIZE)
@@ -324,7 +402,6 @@ def build_images_and_insert(title, html_body, image_specs):
                 f'style="max-width:100%; height:auto; display:block; margin:1.5em auto;" />'
             )
 
-        placeholder = f"[[IMAGE_{i}]]"
         if placeholder in html_body:
             html_body = html_body.replace(placeholder, img_tag)
         elif i == 1:
@@ -371,12 +448,45 @@ def create_wp_post(title, html_body, featured_media_id, category_id):
         "title": title,
         "content": html_body,
         "status": POST_STATUS,
-        "featured_media": featured_media_id,
     }
+    if featured_media_id:
+        payload["featured_media"] = featured_media_id
     if category_id:
         payload["categories"] = [category_id]
     headers = {**wp_auth_header(), "Content-Type": "application/json"}
-    return http_post_json(url, payload, headers)
+
+    try:
+        return http_post_json(url, payload, headers)
+    except json.JSONDecodeError:
+        # WordPress (or a plugin/host in front of it) sometimes garbles the response even
+        # though the post was actually created successfully. Before giving up, check whether
+        # a matching post now exists -- if so, treat this as a success, not a failure.
+        print("Response wasn't readable JSON; checking whether the post was created anyway...", file=sys.stderr)
+        found = find_post_by_title(title)
+        if found:
+            print(f"Confirmed: the post exists on WordPress (ID {found['id']}), despite the bad response.", file=sys.stderr)
+            return found
+        raise
+
+
+def find_post_by_title(title, statuses=("publish", "draft", "pending", "future")):
+    """Looks for a post with an exact title match, across the given statuses."""
+    status_param = ",".join(statuses)
+    url = (
+        f"{WP_BASE_URL}/wp-json/wp/v2/posts"
+        f"?search={urllib.parse.quote(title)}&status={status_param}&per_page=5&_fields=id,link,title"
+    )
+    try:
+        results = http_get_json(url, headers=wp_auth_header())
+    except Exception as e:
+        print(f"Warning: could not verify post existence ({e})", file=sys.stderr)
+        return None
+
+    for r in results:
+        rendered_title = re.sub("<.*?>", "", r["title"]["rendered"]).strip()
+        if rendered_title == title.strip():
+            return r
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +516,7 @@ def main():
     print(f"Creating WordPress post (status={POST_STATUS})...")
     post = create_wp_post(title, html_body, featured_media_id, category_id)
 
-    print(f"Done! Post ID {post['id']}: {post['link']}")
+    print(f"Done! Post ID {post['id']}: {post.get('link', '(link unavailable)')}")
 
 
 if __name__ == "__main__":
