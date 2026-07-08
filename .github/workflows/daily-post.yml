@@ -1,0 +1,61 @@
+name: Daily WordPress Post
+
+on:
+  schedule:
+    # Runs at 13:00 UTC every day (~9am US Eastern). Edit the cron to taste.
+    - cron: "15 13 * * *"
+    
+    # Twice a day (9am and 6pm UTC)
+    #- cron: "0 9 * * *"
+    #- cron: "0 18 * * *"
+    # (yes, you can list multiple cron lines under `schedule:` for multiple times per day)
+
+    # Every other day at 9am UTC
+    #- cron: "0 9 */2 * *"
+
+    # Once a week, every Monday at 9am UTC
+    #- cron: "0 9 * * 1"
+
+    # Weekdays only (Mon-Fri), 9am UTC
+    #- cron: "0 9 * * 1-5"
+
+    # Twice a week (Mon and Thu), 9am UTC
+    #- cron: "0 9 * * 1,4"
+
+    # Once a month, on the 1st, 9am UTC
+    #- cron: "0 9 1 * *"
+  workflow_dispatch: {}  # lets you also trigger it manually from the Actions tab
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the daily post script
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          POST_STATUS: publish
+          SITE_TOPIC: "Home decor, home maintenance, basically all sorts of 'home' stuff."
+          SITE_VOICE: "like a knowledgeable friend texting you a tip, a little wry, not afraid to admit when something's annoying or overrated"
+          SITE_INSTRUCTIONS: |
+            - At least some of the time, try to think of more a "niche" topic that someone might search for, and then give them what they're looking for. Consider what someone who's looking into getting a tattoo, or who already got a tattoo, would be searching for online.
+            - Vary the structure between posts -- don't always use the same intro/body/conclusion shape or always reach for a bulleted list.
+            - Avoid starting posts with a rhetorical question or a "we've all been there" style opener.
+            - Never use generic transitional phrases like "in today's world," "it's important to note," "let's dive in," or similar filler openers.
+            - Don't hedge every claim with counterpoints -- commit to a point of view where reasonable
+            - Vary sentence length noticeably -- mix short, punchy sentences with longer ones. Avoid uniform paragraph lengths.
+        run: python generate_daily_post.py
