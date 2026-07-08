@@ -49,7 +49,7 @@ jobs:
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           POST_STATUS: publish
-          SITE_TOPIC: "Home decor, home maintenance, basically all sorts of 'home' stuff."
+          SITE_TOPIC: "Tattoos, more focused on people who like tattoos or getting tattoos, and not giving people tattoos."
           SITE_VOICE: "like a knowledgeable friend texting you a tip, a little wry, not afraid to admit when something's annoying or overrated"
           SITE_INSTRUCTIONS: |
             - At least some of the time, try to think of more a "niche" topic that someone might search for, and then give them what they're looking for. Consider what someone who's looking into getting a tattoo, or who already got a tattoo, would be searching for online.
