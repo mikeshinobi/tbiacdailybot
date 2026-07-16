@@ -58,4 +58,8 @@ jobs:
             - Never use generic transitional phrases like "in today's world," "it's important to note," "let's dive in," or similar filler openers.
             - Don't hedge every claim with counterpoints -- commit to a point of view where reasonable
             - Vary sentence length noticeably -- mix short, punchy sentences with longer ones. Avoid uniform paragraph lengths.
+            - Do your best to make the title and content SEO-friendly, but ensure it still looks natural and doesn't come across as robotically optimized
+            - Embed 1 or 2 outbound links somewhere in the post where it would make sense, to web pages that would make sense to link to in the context of the post
+            - Embed another 1 or 2 Amazon affiliate links to a product/products that, again, make sense in the context of the post
+            - My Amazon affiliate tag is tbiac-20
         run: python generate_daily_post.py
