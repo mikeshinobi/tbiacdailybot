@@ -162,11 +162,31 @@ def generate_post(recent_titles, categories):
     today_str = datetime.date.today().strftime("%A, %B %d, %Y")
     category_list = ", ".join(c["name"] for c in categories) if categories else "(none exist yet)"
 
+    parens_count = sum(1 for t in recent_titles if "(" in t)
+    PARENS_LIMIT = 3
+    if recent_titles and parens_count >= PARENS_LIMIT:
+        parens_instruction = (
+            f"{parens_count} of your last {len(recent_titles)} post titles already used "
+            f"parentheses (limit: at most {PARENS_LIMIT} per 10). Do NOT use parentheses in "
+            "this post's title -- use a different title structure instead."
+        )
+    elif recent_titles:
+        parens_instruction = (
+            f"{parens_count} of your last {len(recent_titles)} post titles used parentheses "
+            f"(limit: at most {PARENS_LIMIT} per 10). You may use a parenthetical title if it "
+            "genuinely fits this post, but most titles should not use one."
+        )
+    else:
+        parens_instruction = (
+            f"Use parentheses in a post title only occasionally (at most {PARENS_LIMIT} out of "
+            "every 10 posts), and only when it genuinely fits -- most titles should not use one."
+        )
+
     system_prompt = f"""You are a content writer for a website about: {SITE_TOPIC}.
 Your writing voice is: {SITE_VOICE}.
-Today's date is: {today_str}. Some of the time, and only where it fits naturally, let this influence your topic choice --
+Today's date is: {today_str}. Where it fits naturally, let this influence your topic choice --
 e.g. lean into a season, upcoming holiday, or time-of-year-relevant angle. Don't force it if
-the topic doesn't call for it. At the very least, let it steer you away from certain topics -- eg. don't write about Christmas and winter stuff in July
+the topic doesn't call for it.
 
 Additional rules and instructions you must follow:
 {SITE_INSTRUCTIONS if SITE_INSTRUCTIONS.strip() else "(none)"}
@@ -174,7 +194,7 @@ Additional rules and instructions you must follow:
 The site's existing categories are: {category_list}
 
 You must respond with ONLY a JSON object (no markdown fences, no commentary) with exactly these keys:
-  "title": a compelling, specific post title (not generic)
+  "title": a compelling, specific post title (not generic). {parens_instruction}
   "category": the single best-fitting category name for this post. Prefer reusing one of the
               existing categories listed above if one genuinely fits. Only propose a brand new
               category name if none of the existing ones make sense for this post's topic.
